@@ -1,466 +1,622 @@
-(function () {
-  "use strict";
+import Anthropic from "./vendor/anthropic-sdk-1.0.0.mjs";
 
-  const $ = (id) => document.getElementById(id);
-  const fieldNames = ["nome", "data", "cpf", "diagnostico", "cid", "observacoes"];
-  const fieldLabels = {
-    nome: "Nome completo",
-    data: "Data",
-    cpf: "CPF",
-    diagnostico: "Diagnóstico",
-    cid: "CID",
-    observacoes: "Observações"
+const $ = (id) => document.getElementById(id);
+const MODEL = "claude-opus-5-5";
+const KEY_STORAGE = "orthckform.anthropicKey";
+
+// Campos do cadastro do Orthck (Paciente em Modelos.swift / Modelos.cs). As chaves são as do dados.json.
+const PATIENT_FIELDS = [
+  ["nome", "Nome completo", "full"],
+  ["dataNascimento", "Data de nascimento", "", "DD/MM/AAAA"],
+  ["cpf", "CPF", "", "000.000.000-00"],
+  ["cns", "CNS (cartão do SUS)", ""],
+  ["rg", "RG", ""],
+  ["telefone", "Telefone", ""],
+  ["email", "E-mail", ""],
+  ["endereco", "Endereço", "full"],
+  ["numero", "Nº", ""],
+  ["bairro", "Bairro", ""],
+  ["cidade", "Cidade", ""],
+  ["uf", "UF", ""],
+  ["cep", "CEP", ""],
+  ["convenio", "Convênio", ""]
+];
+const PATIENT_KEYS = PATIENT_FIELDS.map((f) => f[0]);
+
+// Campos do atendimento (ficha Avaliação ortopédica – Araruna, CER II). Valem só para o prontuário.
+const CLINICAL_FIELDS = [
+  ["dataAvaliacao", "Data da avaliação", ""],
+  ["cid", "CID-10", ""],
+  ["queixaPrincipal", "Queixa principal (Q.P.)", "full"],
+  ["hda", "H.D.A.", "full", "", 4],
+  ["exameFisico", "Exame físico", "full", "", 4],
+  ["examesComplementares", "Exames complementares", "full", "", 2],
+  ["diagnostico", "Diagnóstico", "full"],
+  ["programacaoTerapeutica", "Programação terapêutica", "full", "", 3],
+  ["perfilCerII", "Perfil CER II", "full"]
+];
+const CLINICAL_KEYS = CLINICAL_FIELDS.map((f) => f[0]);
+
+const state = {
+  photo: null,
+  photoURL: null,
+  busy: false,
+  dados: null,        // dados.json aberto (objeto completo, preservado)
+  dadosName: "",
+  queue: [],          // { tipo: "novo" | "atualizar", paciente, alvoId?, resumo }
+  matchChoice: null   // id do paciente escolhido, "novo" ou null
+};
+
+// MARK: Utilidades
+
+function status(id, message, tone) {
+  const el = $(id);
+  el.textContent = message || "";
+  el.className = "status" + (tone ? " " + tone : "");
+}
+
+function setBusy(busy) {
+  state.busy = busy;
+  ["readBtn", "addBtn", "downloadBtn"].forEach((id) => { $(id).disabled = busy; });
+  if (!busy) { $("downloadBtn").disabled = state.queue.length === 0; }
+}
+
+function newUUID() {
+  const id = (crypto.randomUUID ? crypto.randomUUID() : "10000000-1000-4000-8000-100000000000".replace(/[018]/g, (c) =>
+    (c ^ crypto.getRandomValues(new Uint8Array(1))[0] & 15 >> c / 4).toString(16)));
+  return id.toUpperCase(); // como o Swift grava
+}
+
+function normalizeName(value) {
+  return String(value || "").normalize("NFD").replace(/[̀-ͯ]/g, "")
+    .toUpperCase().replace(/\s+/g, " ").trim();
+}
+
+const digits = (value) => String(value || "").replace(/\D/g, "");
+
+function sameId(a, b) {
+  return String(a || "").toUpperCase() === String(b || "").toUpperCase();
+}
+
+function escapeHTML(value) {
+  return String(value).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" }[c]));
+}
+
+function safeStorage(action) {
+  try { return action(window.localStorage); } catch (_) { return null; }
+}
+
+// O Orthck guarda nome e campos em MAIÚSCULAS (menos o e-mail).
+function cleanPatientValue(key, value) {
+  const text = String(value || "").replace(/\s+\n/g, "\n").trim();
+  if (key === "email") { return text.toLowerCase(); }
+  return text.toUpperCase();
+}
+
+function formatDate(value) {
+  const m = String(value || "").trim().match(/^(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{2}|\d{4})$/);
+  if (!m) { return String(value || "").trim(); }
+  let year = m[3];
+  if (year.length === 2) {
+    const now = new Date().getFullYear() % 100;
+    year = (Number(year) > now ? "19" : "20") + year;
+  }
+  return m[1].padStart(2, "0") + "/" + m[2].padStart(2, "0") + "/" + year;
+}
+
+function formatCPF(value) {
+  const d = digits(value);
+  return d.length === 11 ? d.replace(/(\d{3})(\d{3})(\d{3})(\d{2})/, "$1.$2.$3-$4") : String(value || "").trim();
+}
+
+function formatCEP(value) {
+  const d = digits(value);
+  return d.length === 8 ? d.replace(/(\d{5})(\d{3})/, "$1-$2") : String(value || "").trim();
+}
+
+function validCPF(value) {
+  const d = digits(value);
+  if (d.length !== 11 || /^(\d)\1+$/.test(d)) { return false; }
+  const check = (len) => {
+    let sum = 0;
+    for (let i = 0; i < len; i++) { sum += Number(d[i]) * (len + 1 - i); }
+    const r = (sum * 10) % 11;
+    return (r === 10 ? 0 : r) === Number(d[len]);
   };
-  const defaults = {
-    nome: { x: 10, y: 24, size: 12, lines: 2 },
-    data: { x: 10, y: 35, size: 12, lines: 1 },
-    cpf: { x: 59, y: 35, size: 12, lines: 1 },
-    diagnostico: { x: 10, y: 47, size: 11, lines: 4 },
-    cid: { x: 10, y: 59, size: 12, lines: 1 },
-    observacoes: { x: 10, y: 72, size: 11, lines: 9 }
-  };
-  const state = {
-    photo: null,
-    photoURL: null,
-    templateBytes: null,
-    demoBytes: null,
-    previewURL: null,
-    busy: false
-  };
+  return check(9) && check(10);
+}
 
-  function status(id, message, tone) {
-    const el = $(id);
-    el.textContent = message;
-    el.className = "status" + (tone ? " " + tone : "");
+// MARK: Formulário
+
+function renderFields(containerId, fields, prefix) {
+  $(containerId).innerHTML = fields.map(([key, label, cls, placeholder, rows]) => {
+    const id = prefix + key;
+    const control = rows
+      ? '<textarea id="' + id + '" rows="' + rows + '"></textarea>'
+      : '<input id="' + id + '" type="text"' + (placeholder ? ' placeholder="' + placeholder + '"' : "") + ">";
+    return '<label class="' + (cls || "") + '" for="' + id + '">' + label + control + "</label>";
+  }).join("");
+}
+
+function readPatient() {
+  const p = {};
+  PATIENT_KEYS.forEach((key) => { p[key] = cleanPatientValue(key, $("p-" + key).value); });
+  p.dataNascimento = formatDate(p.dataNascimento);
+  p.cpf = formatCPF(p.cpf);
+  p.cep = formatCEP(p.cep);
+  p.cns = digits(p.cns).length === 15 ? digits(p.cns) : p.cns;
+  return p;
+}
+
+function readClinical() {
+  const c = {};
+  CLINICAL_KEYS.forEach((key) => { c[key] = $("c-" + key).value.trim(); });
+  return c;
+}
+
+function markDoubts(doubts) {
+  const set = new Set(doubts || []);
+  PATIENT_KEYS.forEach((k) => $("p-" + k).classList.toggle("doubt", set.has(k)));
+  CLINICAL_KEYS.forEach((k) => $("c-" + k).classList.toggle("doubt", set.has(k)));
+}
+
+function fillForm(result) {
+  const p = result.paciente || {};
+  PATIENT_KEYS.forEach((key) => { $("p-" + key).value = cleanPatientValue(key, p[key]); });
+  $("p-dataNascimento").value = formatDate($("p-dataNascimento").value);
+  $("p-cpf").value = formatCPF($("p-cpf").value);
+  $("p-cep").value = formatCEP($("p-cep").value);
+  const c = result.atendimento || {};
+  CLINICAL_KEYS.forEach((key) => { $("c-" + key).value = String(c[key] || "").trim(); });
+  $("transcript").value = result.transcricao || "";
+  const doubts = (result.duvidas || []).slice();
+  if ($("p-cpf").value && !validCPF($("p-cpf").value)) { doubts.push("cpf"); }
+  markDoubts(doubts);
+  if (CLINICAL_KEYS.some((k) => c[k])) { $("atendimentoDetails").open = true; }
+  guessLocal(result.local || "");
+  state.matchChoice = null;
+  updateMatches();
+}
+
+function clearForm() {
+  PATIENT_KEYS.forEach((k) => { $("p-" + k).value = ""; });
+  CLINICAL_KEYS.forEach((k) => { $("c-" + k).value = ""; });
+  $("transcript").value = "";
+  $("appendObs").checked = false;
+  markDoubts([]);
+  state.matchChoice = null;
+  updateMatches();
+}
+
+// MARK: dados.json
+
+const pacientesDoArquivo = () => (state.dados && Array.isArray(state.dados.pacientes) ? state.dados.pacientes : []);
+const locaisDoArquivo = () => (state.dados && Array.isArray(state.dados.locais) ? state.dados.locais : []);
+
+async function openDados(file) {
+  if (!file) { return; }
+  try {
+    const parsed = JSON.parse(await file.text());
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed) ||
+        (!Array.isArray(parsed.pacientes) && !Array.isArray(parsed.locais))) {
+      throw new Error("este arquivo não parece ser um dados.json do Orthck");
+    }
+    if (state.queue.length && !window.confirm("Trocar o arquivo de dados descarta a lista de pacientes ainda não baixada. Continuar?")) {
+      $("dadosInput").value = ""; return;
+    }
+    state.dados = parsed;
+    state.dadosName = file.name;
+    state.queue = [];
+    renderQueue();
+    renderLocais();
+    updateMatches();
+    $("dadosInfo").textContent = file.name + " • " + pacientesDoArquivo().length + " pacientes, " +
+      locaisDoArquivo().length + " locais de atendimento.";
+    $("dadosInfo").className = "hint success";
+  } catch (err) {
+    $("dadosInput").value = "";
+    $("dadosInfo").textContent = "Não foi possível abrir: " + (err.message || String(err)) + ".";
+    $("dadosInfo").className = "hint error";
   }
+}
 
-  function setBusy(busy) {
-    state.busy = busy;
-    ["localOcrBtn", "aiOcrBtn", "generateBtn", "demoTemplateBtn", "extractBtn"]
-      .forEach((id) => { $(id).disabled = busy; });
+function renderLocais() {
+  const locais = locaisDoArquivo().slice().sort((a, b) => String(a.nome).localeCompare(String(b.nome), "pt-BR"));
+  const previous = $("localSelect").value || safeStorage((s) => s.getItem("orthckform.local")) || "";
+  $("localSelect").innerHTML = '<option value="">Nenhum</option>' + locais.map((l) =>
+    '<option value="' + escapeHTML(l.id) + '">' + escapeHTML(l.nome || "Local sem nome") + "</option>").join("");
+  if (locais.some((l) => sameId(l.id, previous))) { $("localSelect").value = locais.find((l) => sameId(l.id, previous)).id; }
+  $("localSelectWrap").classList.toggle("hidden", !state.dados);
+  $("localNameWrap").classList.toggle("hidden", !!state.dados);
+  renderHowto();
+}
+
+// A ficha costuma trazer o nome do serviço (ex.: “Araruna”): sugere o local de mesmo nome se nenhum foi escolhido.
+function guessLocal(hint) {
+  if (!state.dados || $("localSelect").value) { return; }
+  const words = normalizeName(hint).split(" ").filter((w) => w.length > 3);
+  const local = locaisDoArquivo().find((l) => words.some((w) => normalizeName(l.nome).includes(w)));
+  if (local) { $("localSelect").value = local.id; }
+}
+
+function chosenLocal() {
+  if (state.dados) {
+    const id = $("localSelect").value;
+    return id ? locaisDoArquivo().find((l) => sameId(l.id, id)) || null : null;
   }
+  const nome = $("localName").value.trim().toUpperCase();
+  return nome ? { nome } : null;
+}
 
-  function textFields() {
-    const data = {};
-    fieldNames.forEach((key) => { data[key] = $( "field-" + key ).value.trim(); });
-    return data;
+// MARK: Paciente já cadastrado?
+
+function candidates(p) {
+  const list = pacientesDoArquivo().map((x) => ({ paciente: x, origem: "cadastro" }))
+    .concat(state.queue.filter((q) => q.tipo === "novo").map((q) => ({ paciente: q.paciente, origem: "lista" })));
+  const nome = normalizeName(p.nome);
+  const cpf = digits(p.cpf), cns = digits(p.cns);
+  const out = [];
+  list.forEach((item) => {
+    const x = item.paciente;
+    const sameCPF = cpf.length === 11 && digits(x.cpf) === cpf;
+    const sameCNS = cns.length === 15 && digits(x.cns) === cns;
+    const sameName = nome && normalizeName(x.nome) === nome;
+    const sameDN = p.dataNascimento && formatDate(x.dataNascimento) === p.dataNascimento;
+    if (sameCPF || sameCNS || (sameName && sameDN)) {
+      out.push({ ...item, forte: true, motivo: sameCPF ? "mesmo CPF" : sameCNS ? "mesmo CNS" : "mesmo nome e nascimento" });
+    } else if (sameName) {
+      out.push({ ...item, forte: false, motivo: "mesmo nome" });
+    }
+  });
+  return out;
+}
+
+function describe(x) {
+  const parts = [];
+  if (x.dataNascimento) { parts.push("nasc. " + x.dataNascimento); }
+  if (x.cpf) { parts.push("CPF " + x.cpf); }
+  if (x.cns) { parts.push("CNS " + x.cns); }
+  return parts.join(" · ") || "sem nascimento/CPF";
+}
+
+function updateMatches() {
+  const box = $("matchBox");
+  const p = readPatient();
+  const found = p.nome ? candidates(p) : [];
+  if (!found.length) {
+    box.classList.add("hidden");
+    box.innerHTML = "";
+    state.matchChoice = "novo";
+    return;
   }
+  const strong = found.find((f) => f.forte);
+  const valid = found.some((f) => sameId(f.paciente.id, state.matchChoice)) || state.matchChoice === "novo";
+  if (!valid) { state.matchChoice = strong ? strong.paciente.id : null; }
+  box.classList.remove("hidden");
+  box.innerHTML = '<h3 id="matchTitle">' + (strong ? "Este paciente já parece estar cadastrado" : "Há paciente com o mesmo nome") + "</h3>" +
+    '<p class="hint">' + (strong
+      ? "Os campos vazios do cadastro serão completados com os da ficha; o que já está no cadastro não é trocado."
+      : "Escolha se é a mesma pessoa ou outro paciente (o Orthck também não escolhe sozinho entre homônimos).") + "</p>" +
+    found.map((f) => '<label class="check"><input type="radio" name="match" value="' + escapeHTML(f.paciente.id) + '"' +
+      (sameId(f.paciente.id, state.matchChoice) ? " checked" : "") + "> <span><strong>" + escapeHTML(f.paciente.nome) + "</strong> — " +
+      escapeHTML(describe(f.paciente)) + ' <em>(' + f.motivo + (f.origem === "lista" ? ", já na lista" : "") + ")</em></span></label>").join("") +
+    '<label class="check"><input type="radio" name="match" value="novo"' + (state.matchChoice === "novo" ? " checked" : "") +
+    "> <span>É outro paciente: cadastrar como novo</span></label>";
+  box.querySelectorAll('input[name="match"]').forEach((r) => r.addEventListener("change", () => { state.matchChoice = r.value; }));
+}
 
-  function applyFields(data) {
-    fieldNames.forEach((key) => {
-      const incoming = data && data[key];
-      if (typeof incoming === "string" || typeof incoming === "number") {
-        $( "field-" + key ).value = String(incoming);
-      }
+// MARK: Leitura com o Claude
+
+const str = { type: "string" };
+const RESULT_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["paciente", "atendimento", "local", "duvidas", "transcricao"],
+  properties: {
+    paciente: {
+      type: "object", additionalProperties: false, required: PATIENT_KEYS,
+      properties: Object.fromEntries(PATIENT_KEYS.map((k) => [k, str]))
+    },
+    atendimento: {
+      type: "object", additionalProperties: false, required: CLINICAL_KEYS,
+      properties: Object.fromEntries(CLINICAL_KEYS.map((k) => [k, str]))
+    },
+    local: str,
+    duvidas: { type: "array", items: { type: "string", enum: PATIENT_KEYS.concat(CLINICAL_KEYS) } },
+    transcricao: str
+  }
+};
+
+const SYSTEM_PROMPT = [
+  "Você transcreve fichas médicas em português (muitas preenchidas à mão) para cadastrar pacientes no Orthck, um app de consultório de ortopedia.",
+  "A ficha mais comum é a “Avaliação ortopédica” do CER II de Araruna (PB): 1. Identificação (Nome, D/N, Endereço, nº, CPF, Bairro, Cidade, UF, CEP, Diagnóstico, Data da Avaliação, Tel, CNS), 2. Q.P., 3. H.D.A., 4. Exame físico, 5. Programação terapêutica, CID 10 e Perfil CER II. Outras fichas também podem aparecer: use os mesmos campos.",
+  "Regras:",
+  "- Transcreva só o que está escrito. Nunca invente nem complete nomes, números ou datas. Campo em branco ou ausente: string vazia.",
+  "- Trecho que você não consegue ler: escreva [ilegível] no lugar e inclua a chave do campo em duvidas. Inclua também em duvidas qualquer campo em que você hesitou entre leituras (ex.: um dígito do CPF).",
+  "- Os campos impressos do formulário (rótulos como “Nome:”) não são valores.",
+  "- Datas no formato DD/MM/AAAA quando estiverem completas; se o ano estiver com 2 dígitos, mantenha como escrito.",
+  "- CPF, CNS, CEP e telefone: só os dígitos que estão na ficha, sem adivinhar os que faltam.",
+  "- local: nome do serviço/cidade impresso no cabeçalho da ficha (ex.: “Araruna CER II”), ou vazio.",
+  "- examesComplementares: exames citados (RX, RM, USG…) quando estiverem separados; se estiverem dentro do exame físico, deixe-os lá.",
+  "- transcricao: todo o texto escrito à mão na ficha, na ordem em que aparece, com quebras de linha."
+].join("\n");
+
+function readFileAsDataURL(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(new Error("não foi possível ler a imagem"));
+    reader.readAsDataURL(file);
+  });
+}
+
+// Reduz a foto para no máximo 2000 px e JPEG (fica bem abaixo do limite de 5 MB por imagem da API).
+async function photoAsJPEG(file) {
+  const original = await readFileAsDataURL(file);
+  const img = await new Promise((resolve, reject) => {
+    const i = new Image();
+    i.onload = () => resolve(i);
+    i.onerror = () => reject(new Error("formato de imagem não suportado pelo navegador (tente JPG ou PNG)"));
+    i.src = original;
+  });
+  const factor = Math.min(1, 2000 / Math.max(img.naturalWidth, img.naturalHeight));
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(img.naturalWidth * factor));
+  canvas.height = Math.max(1, Math.round(img.naturalHeight * factor));
+  const ctx = canvas.getContext("2d");
+  ctx.fillStyle = "#fff";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+  return canvas.toDataURL("image/jpeg", 0.9).split(",")[1];
+}
+
+function choosePhoto(file) {
+  if (!file) { return; }
+  if (!file.type.startsWith("image/")) { status("readStatus", "Escolha uma imagem.", "error"); return; }
+  if (file.size > 20 * 1024 * 1024) { status("readStatus", "A foto deve ter no máximo 20 MB.", "error"); return; }
+  if (state.photoURL) { URL.revokeObjectURL(state.photoURL); }
+  state.photo = file;
+  state.photoURL = URL.createObjectURL(file);
+  $("photoPreview").src = state.photoURL;
+  $("photoFileName").textContent = file.name;
+  $("photoPreviewWrap").classList.remove("hidden");
+  status("readStatus", "Foto pronta. Clique em “Ler ficha com o Claude”.");
+}
+
+async function readForm() {
+  if (!state.photo) { status("readStatus", "Primeiro escolha a foto da ficha.", "error"); return; }
+  const apiKey = $("apiKey").value.trim();
+  if (!apiKey) { status("readStatus", "Informe a chave de API da Anthropic.", "error"); return; }
+  if ($("rememberKey").checked) { safeStorage((s) => s.setItem(KEY_STORAGE, apiKey)); } else { safeStorage((s) => s.removeItem(KEY_STORAGE)); }
+
+  setBusy(true);
+  status("readStatus", "Lendo a ficha… isso pode levar até um minuto.");
+  try {
+    const image = await photoAsJPEG(state.photo);
+    const client = new Anthropic({ apiKey, dangerouslyAllowBrowser: true });
+    const response = await client.beta.messages.create({
+      model: MODEL,
+      max_tokens: 16000,
+      betas: ["server-side-fallback-2026-07-01"],
+      fallbacks: "default",
+      output_config: { effort: "high", format: { type: "json_schema", schema: RESULT_SCHEMA } },
+      system: SYSTEM_PROMPT,
+      messages: [{
+        role: "user",
+        content: [
+          { type: "image", source: { type: "base64", media_type: "image/jpeg", data: image } },
+          { type: "text", text: "Transcreva esta ficha e preencha os campos." }
+        ]
+      }]
     });
-  }
-
-  function autoExtract(text) {
-    const results = {};
-    const other = [];
-    const rules = [
-      ["nome", /^(?:nome(?:\s+completo)?|paciente)\s*[:\-=]\s*(.*)$/i],
-      ["data", /^(?:data(?:\s+(?:da\s+)?consulta)?|dt\.?)\s*[:\-=]\s*(.*)$/i],
-      ["cpf", /^cpf\s*[:\-=]\s*(.*)$/i],
-      ["diagnostico", /^(?:diagn[oó]stico|diag\.?)\s*[:\-=]\s*(.*)$/i],
-      ["cid", /^cid(?:\s*[- ]?\s*10)?\s*[:\-=]\s*(.*)$/i],
-      ["observacoes", /^(?:observa[cç][oõ]es|obs\.?|anota[cç][oõ]es|descri[cç][aã]o)\s*[:\-=]\s*(.*)$/i]
-    ];
-    String(text || "").split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
-      .forEach((line) => {
-        const rule = rules.find((item) => item[1].test(line));
-        if (!rule) { other.push(line); return; }
-        const value = line.match(rule[1])[1].trim();
-        if (rule[0] === "observacoes") {
-          results.observacoes = [results.observacoes, value].filter(Boolean).join("\n");
-        } else {
-          results[rule[0]] = value;
-        }
-      });
-    if (other.length) {
-      results.observacoes = [results.observacoes, other.join("\n")].filter(Boolean).join("\n");
+    if (response.stop_reason === "refusal") {
+      throw new Error("o modelo recusou esta imagem" + (response.stop_details && response.stop_details.explanation ? " (" + response.stop_details.explanation + ")" : ""));
     }
-    return results;
+    if (response.stop_reason === "max_tokens") { throw new Error("a resposta ficou incompleta; tente de novo"); }
+    const text = response.content.filter((b) => b.type === "text").map((b) => b.text).join("");
+    const result = JSON.parse(text);
+    fillForm(result);
+    const doubts = document.querySelectorAll(".doubt").length;
+    status("readStatus", "Ficha lida. " + (doubts ? doubts + " campo(s) com leitura duvidosa, em laranja. " : "") + "Confira antes de adicionar.", "success");
+    $("review-title").scrollIntoView({ behavior: "smooth", block: "start" });
+  } catch (err) {
+    status("readStatus", "Falha ao ler a ficha: " + explainError(err), "error");
+  } finally {
+    setBusy(false);
   }
+}
 
-  function renderMappings() {
-    $("mappingRows").innerHTML = fieldNames.map((key) => {
-      const cfg = defaults[key];
-      return '<tr><td><input type="checkbox" data-map-check="' + key + '" checked aria-label="Incluir ' + fieldLabels[key] + '"></td>' +
-        '<td>' + fieldLabels[key] + '</td>' +
-        '<td><input type="number" min="0" max="99" step="1" value="' + cfg.x + '" data-map-x="' + key + '" aria-label="X de ' + fieldLabels[key] + '"></td>' +
-        '<td><input type="number" min="1" max="99" step="1" value="' + cfg.y + '" data-map-y="' + key + '" aria-label="Y de ' + fieldLabels[key] + '"></td>' +
-        '<td><input type="number" min="7" max="22" step="1" value="' + cfg.size + '" data-map-size="' + key + '" aria-label="Fonte de ' + fieldLabels[key] + '"></td></tr>';
-    }).join("");
-  }
+function explainError(err) {
+  if (err instanceof Anthropic.AuthenticationError) { return "chave de API inválida."; }
+  if (err instanceof Anthropic.PermissionDeniedError) { return "esta chave não tem permissão para usar o modelo."; }
+  if (err instanceof Anthropic.RateLimitError) { return "limite de uso atingido; aguarde um pouco e tente de novo."; }
+  if (err instanceof Anthropic.BadRequestError) { return "pedido recusado pela API (" + err.message + ")."; }
+  if (err instanceof Anthropic.APIConnectionError) { return "sem conexão com a API da Anthropic. Verifique a internet."; }
+  if (err instanceof Anthropic.APIError) { return "erro da API (" + (err.status || "") + "): " + err.message; }
+  if (err instanceof SyntaxError) { return "a resposta não veio no formato esperado; tente de novo."; }
+  return err && err.message ? err.message : String(err);
+}
 
-  function readMapping(key) {
-    const get = (attr) => document.querySelector('[' + attr + '="' + key + '"]');
-    const n = (attr, fallback, min, max) => {
-      const value = Number(get(attr).value);
-      return Number.isFinite(value) ? Math.max(min, Math.min(max, value)) : fallback;
-    };
-    return {
-      enabled: get("data-map-check").checked,
-      x: n("data-map-x", defaults[key].x, 0, 99),
-      y: n("data-map-y", defaults[key].y, 1, 99),
-      size: n("data-map-size", defaults[key].size, 7, 22),
-      lines: defaults[key].lines
-    };
-  }
+// MARK: Lista e exportação
 
-  function choosePhoto(file) {
-    if (!file) { return; }
-    if (!file.type.startsWith("image/")) {
-      status("ocrStatus", "Selecione uma imagem válida.", "error"); return;
-    }
-    if (file.size > 15 * 1024 * 1024) {
-      status("ocrStatus", "A foto deve ter no máximo 15 MB.", "error"); return;
-    }
-    if (state.photoURL) { URL.revokeObjectURL(state.photoURL); }
-    state.photo = file;
-    state.photoURL = URL.createObjectURL(file);
-    $("photoPreview").src = state.photoURL;
-    $("photoFileName").textContent = file.name;
-    $("photoPreviewWrap").classList.remove("hidden");
-    status("ocrStatus", "Imagem selecionada. Escolha como reconhecer o texto.");
-  }
+function clinicalSummary(c) {
+  const parts = [];
+  if (c.dataAvaliacao) { parts.push("AVALIAÇÃO " + c.dataAvaliacao.toUpperCase()); }
+  if (c.diagnostico) { parts.push("DIAGNÓSTICO: " + c.diagnostico.toUpperCase()); }
+  if (c.cid) { parts.push("CID " + c.cid.toUpperCase()); }
+  return parts.join(" · ");
+}
 
-  async function localOCR() {
-    if (!state.photo) {
-      status("ocrStatus", "Primeiro selecione uma fotografia.", "error"); return;
-    }
-    if (!window.Tesseract) {
-      status("ocrStatus", "Biblioteca de OCR não carregada. Verifique a internet e recarregue a página.", "error"); return;
-    }
-    let worker;
-    setBusy(true);
-    status("ocrStatus", "Preparando reconhecimento local em português...");
-    try {
-      worker = await Tesseract.createWorker("por", 1, {
-        logger: (event) => {
-          if (event.status && typeof event.progress === "number") {
-            status("ocrStatus", event.status + " — " + Math.round(event.progress * 100) + "%");
-          }
-        }
-      });
-      const result = await worker.recognize(state.photo);
-      const text = result && result.data ? result.data.text.trim() : "";
-      $("transcript").value = text;
-      applyFields(autoExtract(text));
-      status("ocrStatus", text ? "Texto reconhecido localmente. Revise os campos antes de gerar o PDF." :
-        "Não foi possível ler texto. Tente uma foto mais nítida ou digite manualmente.", text ? "success" : "error");
-      if (text) { $("review-title").scrollIntoView({ behavior: "smooth", block: "start" }); }
-    } catch (err) {
-      status("ocrStatus", "Falha no OCR local: " + (err.message || String(err)), "error");
-    } finally {
-      if (worker) { try { await worker.terminate(); } catch (_) {} }
-      setBusy(false);
-    }
-  }
+function addToQueue() {
+  const p = readPatient();
+  if (!p.nome) { status("addStatus", "Preencha o nome do paciente.", "error"); $("p-nome").focus(); return; }
+  updateMatches();
+  if (state.matchChoice === null) { status("addStatus", "Escolha acima se é o mesmo paciente ou outro.", "error"); return; }
+  if (p.cpf && !validCPF(p.cpf) && !window.confirm("O CPF " + p.cpf + " não é válido (dígitos verificadores). Adicionar mesmo assim?")) { return; }
+  if (p.dataNascimento && !/^\d{2}\/\d{2}\/\d{4}$/.test(p.dataNascimento) &&
+      !window.confirm("A data de nascimento “" + p.dataNascimento + "” não está no formato DD/MM/AAAA (o Orthck usa esse formato para calcular a idade). Adicionar mesmo assim?")) { return; }
 
-  function readFileAsDataURL(file) {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(String(reader.result));
-      reader.onerror = () => reject(new Error("Não foi possível ler a imagem."));
-      reader.readAsDataURL(file);
+  const local = chosenLocal();
+  if (local && state.dados) { safeStorage((s) => s.setItem("orthckform.local", local.id)); }
+  const extra = $("appendObs").checked ? clinicalSummary(readClinical()) : "";
+  const choice = state.matchChoice;
+
+  if (choice !== "novo") {
+    const inQueue = state.queue.find((q) => q.tipo === "novo" && sameId(q.paciente.id, choice));
+    const alvo = inQueue ? inQueue.paciente : pacientesDoArquivo().find((x) => sameId(x.id, choice));
+    if (!alvo) { status("addStatus", "Paciente escolhido não encontrado.", "error"); return; }
+    const completed = [], kept = [];
+    const campos = {};
+    PATIENT_KEYS.forEach((key) => {
+      if (key === "nome" || !p[key]) { return; }
+      const atual = String(alvo[key] || "").trim();
+      if (!atual) { campos[key] = p[key]; completed.push(key); } else if (normalizeName(atual) !== normalizeName(p[key])) { kept.push(key); }
     });
-  }
-
-  async function resizedDataURL(file) {
-    const original = await readFileAsDataURL(file);
-    return new Promise((resolve) => {
-      const img = new Image();
-      img.onload = () => {
-        try {
-          const factor = Math.min(1, 2200 / Math.max(img.width, img.height));
-          const canvas = document.createElement("canvas");
-          canvas.width = Math.max(1, Math.round(img.width * factor));
-          canvas.height = Math.max(1, Math.round(img.height * factor));
-          canvas.getContext("2d").drawImage(img, 0, 0, canvas.width, canvas.height);
-          resolve(canvas.toDataURL("image/jpeg", .88));
-        } catch (_) { resolve(original); }
-      };
-      img.onerror = () => resolve(original);
-      img.src = original;
-    });
-  }
-
-  async function aiOCR() {
-    if (!state.photo) {
-      status("ocrStatus", "Primeiro selecione uma fotografia.", "error"); return;
+    if (extra) { campos.observacoes = [String(alvo.observacoes || "").trim(), extra].filter(Boolean).join("\n"); }
+    if (inQueue) {
+      Object.assign(inQueue.paciente, campos);
+      inQueue.resumo = "Novo (completado com outra foto)";
+    } else {
+      state.queue.push({ tipo: "atualizar", alvoId: alvo.id, paciente: { nome: alvo.nome }, campos, local,
+        resumo: completed.length ? "Completar: " + completed.map(labelOf).join(", ") : "Já cadastrado, nada a completar" });
     }
-    const key = $("apiKey").value.trim();
-    if (!key) {
-      status("ocrStatus", "Informe sua chave de API para usar o reconhecimento avançado.", "error"); return;
-    }
-    const consent = window.confirm("Enviar esta imagem à API da OpenAI para reconhecimento de texto? Evite dados reais de pacientes sem as medidas de privacidade necessárias.");
-    if (!consent) { return; }
-    setBusy(true);
-    status("ocrStatus", "Enviando a imagem para reconhecimento avançado...");
-    try {
-      const image = await resizedDataURL(state.photo);
-      const response = await fetch("https://api.openai.com/v1/chat/completions", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "Authorization": "Bearer " + key },
-        body: JSON.stringify({
-          model: "gpt-4o-mini",
-          temperature: 0,
-          response_format: { type: "json_object" },
-          max_tokens: 1800,
-          messages: [
-            {
-              role: "system",
-              content: "Você é um transcritor de documentos manuscritos em português. Nunca invente texto; para trechos ilegíveis use [ilegível]. Responda SOMENTE com JSON válido contendo transcricao (string) e campos (objeto com chaves nome,data,cpf,diagnostico,cid,observacoes; use strings vazias quando ausentes). Preserve grafia clínica e valores presentes. Não infira diagnósticos, nomes ou datas não visíveis."
-            },
-            {
-              role: "user",
-              content: [
-                { type: "text", text: "Transcreva fielmente esta imagem e extraia os campos explícitos. Mantenha o restante em observacoes." },
-                { type: "image_url", image_url: { url: image, detail: "high" } }
-              ]
-            }
-          ]
-        })
-      });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        const message = payload.error && payload.error.message ? payload.error.message : "Erro HTTP " + response.status;
-        throw new Error(message);
-      }
-      const answer = payload.choices && payload.choices[0] && payload.choices[0].message && payload.choices[0].message.content;
-      if (!answer) { throw new Error("A API não retornou uma transcrição."); }
-      const parsed = JSON.parse(answer);
-      const transcript = typeof parsed.transcricao === "string" ? parsed.transcricao : "";
-      $("transcript").value = transcript;
-      applyFields(Object.assign(autoExtract(transcript), parsed.campos || {}));
-      status("ocrStatus", "Reconhecimento por IA concluído. Confira todos os campos.", "success");
-      $("review-title").scrollIntoView({ behavior: "smooth", block: "start" });
-    } catch (err) {
-      status("ocrStatus", "Falha no reconhecimento por IA: " + (err.message || String(err)) +
-        ". Se houver bloqueio de rede/CORS, use o OCR local ou um backend protegido.", "error");
-    } finally {
-      $("apiKey").value = "";
-      setBusy(false);
-    }
-  }
-
-  function replacePreview(data) {
-    if (state.previewURL) { URL.revokeObjectURL(state.previewURL); }
-    state.previewURL = URL.createObjectURL(new Blob([data], { type: "application/pdf" }));
-    $("pdfPreview").src = state.previewURL;
-    $("pdfPreviewWrap").classList.remove("hidden");
-  }
-
-  async function makeDemoPDF() {
-    if (state.demoBytes) { return state.demoBytes; }
-    if (!window.PDFLib) { throw new Error("Biblioteca de PDF não disponível."); }
-    const { PDFDocument, StandardFonts, rgb } = PDFLib;
-    const document = await PDFDocument.create();
-    const page = document.addPage([595.28, 841.89]);
-    const width = page.getWidth(), height = page.getHeight();
-    const regular = await document.embedFont(StandardFonts.Helvetica);
-    const bold = await document.embedFont(StandardFonts.HelveticaBold);
-    page.drawRectangle({ x: 0, y: height - 115, width, height: 115, color: rgb(.07, .18, .28) });
-    page.drawText("OrthckForm", { x: 57, y: height - 62, size: 24, font: bold, color: rgb(1, 1, 1) });
-    page.drawText("MODELO DE DEMONSTRACAO", { x: 58, y: height - 83, size: 10, font: regular, color: rgb(.72, .91, .9) });
-    page.drawText("FICHA DE REGISTRO", { x: 57, y: height - 151, size: 15, font: bold, color: rgb(.08, .23, .34) });
-
-    const labels = [
-      ["NOME COMPLETO", 10, 20, 76],
-      ["DATA", 10, 31, 36],
-      ["CPF", 59, 31, 31],
-      ["DIAGNOSTICO", 10, 43, 78],
-      ["CID", 10, 55, 36],
-      ["OBSERVACOES", 10, 68, 78]
-    ];
-    labels.forEach(([label, x, y, widthPct]) => {
-      const left = width * x / 100, top = height * y / 100;
-      page.drawText(label, { x: left, y: height - top, size: 9, font: bold, color: rgb(.35, .47, .54) });
-      page.drawLine({ start: { x: left, y: height - top - 46 }, end: { x: left + width * widthPct / 100, y: height - top - 46 }, thickness: .7, color: rgb(.76, .83, .85) });
-    });
-    page.drawText("Modelo ilustrativo. Revise todo o conteudo antes de utilizar.", {
-      x: 57, y: 36, size: 9, font: regular, color: rgb(.45, .54, .58)
-    });
-    state.demoBytes = await document.save();
-    return state.demoBytes;
-  }
-
-  async function useDemo() {
-    try {
-      state.templateBytes = null;
-      $("pdfInput").value = "";
-      $("pageNumber").value = "1";
-      $("pageNumber").max = "1";
-      replacePreview(await makeDemoPDF());
-      $("pdfFileName").textContent = "Modelo de demonstração (A4) selecionado.";
-      status("pdfStatus", "");
-    } catch (err) {
-      status("pdfStatus", err.message || String(err), "error");
-    }
-  }
-
-  async function uploadTemplate(file) {
-    if (!file) { return; }
-    try {
-      if (file.size > 20 * 1024 * 1024) { throw new Error("O PDF deve ter até 20 MB."); }
-      const bytes = new Uint8Array(await file.arrayBuffer());
-      const doc = await PDFLib.PDFDocument.load(bytes.slice(), { ignoreEncryption: false });
-      const count = doc.getPageCount();
-      if (!count) { throw new Error("Este arquivo não contém páginas."); }
-      state.templateBytes = bytes;
-      $("pageNumber").max = String(count);
-      $("pageNumber").value = "1";
-      $("pdfFileName").textContent = file.name + " • " + count + (count === 1 ? " página" : " páginas");
-      replacePreview(bytes);
-      status("pdfStatus", "Modelo carregado. Ajuste as coordenadas dos campos antes de gerar.");
-    } catch (err) {
-      $("pdfInput").value = "";
-      status("pdfStatus", "Não foi possível abrir o PDF: " + (err.message || String(err)), "error");
-    }
-  }
-
-  function normalize(value) {
-    return String(value).normalize("NFD").replace(/[\u0300-\u036f]/g, "")
-      .toLowerCase().replace(/[^a-z0-9]/g, "");
-  }
-
-  const aliases = {
-    nome: ["nome", "nomecompleto", "paciente", "nomedopaciente"],
-    data: ["data", "datadaconsulta", "dataatendimento"],
-    cpf: ["cpf", "cpfdompaciente", "cpfpaciente"],
-    diagnostico: ["diagnostico", "diagnosticoprincipal"],
-    cid: ["cid", "cid10"],
-    observacoes: ["observacoes", "observacao", "anotacoes", "descricao"]
-  };
-
-  function safeLatin(text) {
-    return String(text).replace(/\r/g, "").replace(/[^\x09\x0A\x20-\x7E\xA0-\xFF\u20AC\u2018-\u201D\u2022]/g, "?");
-  }
-
-  function wrapText(value, font, size, maxWidth, limit) {
-    const lines = [];
-    safeLatin(value).split("\n").forEach((paragraph) => {
-      let current = "";
-      paragraph.split(/\s+/).filter(Boolean).forEach((word) => {
-        const candidate = current ? current + " " + word : word;
-        if (font.widthOfTextAtSize(candidate, size) <= maxWidth) {
-          current = candidate;
-        } else {
-          if (current) { lines.push(current); current = ""; }
-          if (font.widthOfTextAtSize(word, size) <= maxWidth) {
-            current = word;
-          } else {
-            let part = "";
-            for (const char of word) {
-              if (font.widthOfTextAtSize(part + char, size) > maxWidth && part) {
-                lines.push(part); part = "";
-              }
-              part += char;
-            }
-            current = part;
-          }
-        }
-      });
-      if (current) { lines.push(current); }
-    });
-    return lines.slice(0, limit);
-  }
-
-  async function generate() {
-    if (!window.PDFLib) {
-      status("pdfStatus", "Biblioteca de PDF indisponível. Recarregue a página.", "error"); return;
-    }
-    const values = textFields();
-    if (!Object.values(values).some(Boolean)) {
-      status("pdfStatus", "Preencha ou reconheça pelo menos um campo.", "error"); return;
-    }
-    setBusy(true);
-    status("pdfStatus", "Gerando documento...");
-    try {
-      const source = state.templateBytes || await makeDemoPDF();
-      const document = await PDFLib.PDFDocument.load(source.slice());
-      const regular = await document.embedFont(PDFLib.StandardFonts.Helvetica);
-      const requestedPage = Number($("pageNumber").value);
-      const pageIndex = Number.isFinite(requestedPage) ? Math.max(0, Math.min(document.getPageCount() - 1, requestedPage - 1)) : 0;
-      const page = document.getPage(pageIndex);
-      const filledNative = new Set();
-
-      try {
-        const form = document.getForm();
-        form.getFields().forEach((field) => {
-          if (!(field instanceof PDFLib.PDFTextField)) { return; }
-          const key = fieldNames.find((name) => aliases[name].includes(normalize(field.getName())));
-          if (key && values[key] && readMapping(key).enabled) {
-            try {
-              field.setText(safeLatin(values[key]));
-              filledNative.add(key);
-            } catch (_) { /* fallback to visual overlay */ }
-          }
-        });
-        if (filledNative.size) {
-          try { form.updateFieldAppearances(regular); } catch (_) { /* keep existing appearance */ }
-        }
-      } catch (_) { /* PDFs may not contain AcroForm fields */ }
-
-      const width = page.getWidth(), height = page.getHeight();
-      fieldNames.forEach((key) => {
-        const value = values[key];
-        const m = readMapping(key);
-        if (!value || !m.enabled || filledNative.has(key)) { return; }
-        const x = m.x * width / 100;
-        const y = height - m.y * height / 100;
-        const maxWidth = Math.max(24, width - x - width * .06);
-        const lines = wrapText(value, regular, m.size, maxWidth, m.lines);
-        lines.forEach((line, i) => {
-          page.drawText(line, { x, y: y - i * m.size * 1.4, size: m.size,
-            color: PDFLib.rgb(.08, .15, .22), font: regular });
-        });
-      });
-
-      const output = await document.save();
-      replacePreview(output);
-      const blob = new Blob([output], { type: "application/pdf" });
-      const url = URL.createObjectURL(blob);
-      const link = window.document.createElement("a");
-      const name = normalize(values.nome).slice(0, 35) || "documento";
-      link.href = url;
-      link.download = "OrthckForm-" + name + ".pdf";
-      window.document.body.appendChild(link);
-      link.click();
-      link.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 15000);
-      status("pdfStatus", "PDF gerado e download iniciado. Confira o resultado.", "success");
-    } catch (err) {
-      status("pdfStatus", "Falha ao gerar o PDF: " + (err.message || String(err)), "error");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  function init() {
-    renderMappings();
-    $("photoInput").addEventListener("change", (event) => choosePhoto(event.target.files[0]));
-    $("localOcrBtn").addEventListener("click", localOCR);
-    $("aiOcrBtn").addEventListener("click", aiOCR);
-    $("extractBtn").addEventListener("click", () => {
-      applyFields(autoExtract($("transcript").value));
-      status("ocrStatus", "Campos extraídos. Confira os resultados.", "success");
-    });
-    $("demoTemplateBtn").addEventListener("click", useDemo);
-    $("pdfInput").addEventListener("change", (event) => uploadTemplate(event.target.files[0]));
-    $("generateBtn").addEventListener("click", generate);
-    useDemo();
-    window.addEventListener("beforeunload", () => {
-      if (state.photoURL) { URL.revokeObjectURL(state.photoURL); }
-      if (state.previewURL) { URL.revokeObjectURL(state.previewURL); }
-    });
-  }
-
-  if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", init);
+    status("addStatus", alvo.nome + ": " + (completed.length ? completed.length + " campo(s) a completar." : "nada novo para o cadastro.") +
+      (kept.length ? " Diferente no cadastro (mantido): " + kept.map(labelOf).join(", ") + "." : ""), kept.length ? "" : "success");
   } else {
-    init();
+    const paciente = { id: newUUID() };
+    PATIENT_KEYS.forEach((key) => { paciente[key] = p[key]; });
+    paciente.observacoes = extra;
+    state.queue.push({ tipo: "novo", paciente, local, resumo: "Novo paciente" });
+    status("addStatus", p.nome + " adicionado à lista.", "success");
   }
-})();
+  renderQueue();
+  clearForm();
+  state.photo = null;
+  $("photoInput").value = "";
+  $("photoPreviewWrap").classList.add("hidden");
+}
+
+function labelOf(key) {
+  const f = PATIENT_FIELDS.find((x) => x[0] === key);
+  return f ? f[1] : key;
+}
+
+function renderQueue() {
+  const list = $("queueList");
+  if (!state.queue.length) {
+    list.innerHTML = '<li class="empty">Nenhum paciente na lista.</li>';
+  } else {
+    list.innerHTML = state.queue.map((q, i) => "<li><div><strong>" + escapeHTML(q.paciente.nome) + "</strong><small>" +
+      escapeHTML(q.resumo + (q.local ? " · " + (q.local.nome || "") : "") + (q.tipo === "novo" ? " · " + describe(q.paciente) : "")) +
+      '</small></div><button type="button" class="text-button" data-remove="' + i + '">Remover</button></li>').join("");
+    list.querySelectorAll("[data-remove]").forEach((b) => b.addEventListener("click", () => {
+      state.queue.splice(Number(b.dataset.remove), 1);
+      renderQueue();
+      updateMatches();
+    }));
+  }
+  $("downloadBtn").disabled = state.busy || !state.queue.length;
+  renderHowto();
+}
+
+function renderHowto() {
+  const n = state.queue.length;
+  $("downloadBtn").textContent = state.dados ? "Baixar dados.json atualizado" + (n ? " (" + n + ")" : "") : "Baixar arquivo para juntar (só Mac)" + (n ? " (" + n + ")" : "");
+  $("howto").innerHTML = state.dados
+    ? "<h3>Depois de baixar</h3><ol>" +
+      "<li><strong>Mac:</strong> Orthck › barra lateral › <em>Importar dados (.json)…</em> › escolha o arquivo baixado › <em>Substituir todos os dados</em>. (Antes, o Orthck guarda uma cópia dos dados atuais em Backups.)</li>" +
+      "<li><strong>Windows:</strong> <em>Importar dados (.json)…</em> › escolha o arquivo baixado › confirme.</li>" +
+      "<li>Use o arquivo logo depois de baixar: o que for cadastrado no Orthck entre abrir o dados.json aqui e importar será perdido na substituição.</li></ol>"
+    : "<h3>Sem o dados.json aberto</h3><p class=\"hint\">O arquivo baixado tem só os pacientes novos. No <strong>Mac</strong>: <em>Importar dados (.json)…</em> › <em>Juntar com os dados atuais</em> (pacientes já cadastrados não são completados e homônimos não são verificados). <strong>Não use no Windows</strong>: lá a importação substitui todos os dados. Para o Windows, abra o dados.json no passo 1.</p>";
+}
+
+function buildOutput() {
+  if (state.dados) {
+    const out = JSON.parse(JSON.stringify(state.dados));
+    out.pacientes = Array.isArray(out.pacientes) ? out.pacientes : [];
+    state.queue.forEach((q) => {
+      if (q.tipo === "novo") {
+        const paciente = { ...q.paciente };
+        if (q.local && q.local.id) { paciente.localID = q.local.id; }
+        out.pacientes.push(paciente);
+      } else {
+        const alvo = out.pacientes.find((x) => sameId(x.id, q.alvoId));
+        if (!alvo) { return; }
+        Object.assign(alvo, q.campos);
+        if (q.local && q.local.id && !alvo.localID) { alvo.localID = q.local.id; }
+      }
+    });
+    return { name: "dados.json", data: out };
+  }
+  // Sem o arquivo: só os pacientes novos, para “Juntar com os dados atuais” no Mac.
+  const locais = [];
+  const pacientes = state.queue.filter((q) => q.tipo === "novo").map((q) => {
+    const paciente = { ...q.paciente };
+    if (q.local) {
+      let local = locais.find((l) => normalizeName(l.nome) === normalizeName(q.local.nome));
+      if (!local) { local = { id: newUUID(), nome: q.local.nome }; locais.push(local); }
+      paciente.localID = local.id; // o Orthck reaproveita o local de mesmo nome ao juntar
+    }
+    return paciente;
+  });
+  const hoje = new Date().toISOString().slice(0, 10);
+  return { name: "orthck-pacientes-" + hoje + ".json", data: { pacientes, locais } };
+}
+
+function download() {
+  if (!state.queue.length) { return; }
+  const { name, data } = buildOutput();
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 15000);
+  const count = state.queue.length;
+  if (state.dados) {
+    // O arquivo baixado passa a ser o dado atual: dá para continuar cadastrando e baixar de novo.
+    state.dados = data;
+    $("dadosInfo").textContent = name + " (atualizado aqui) • " + pacientesDoArquivo().length + " pacientes, " + locaisDoArquivo().length + " locais.";
+  }
+  state.queue = [];
+  renderQueue();
+  status("downloadStatus", name + " baixado com " + count + " paciente(s). Agora importe no Orthck.", "success");
+}
+
+async function copyClinical() {
+  const c = readClinical();
+  const text = CLINICAL_FIELDS.filter(([k]) => c[k]).map(([k, label]) => label + ": " + c[k]).join("\n");
+  if (!text) { return; }
+  try { await navigator.clipboard.writeText(text); $("copyClinicalBtn").textContent = "Copiado!"; } catch (_) { $("copyClinicalBtn").textContent = "Não foi possível copiar"; }
+  setTimeout(() => { $("copyClinicalBtn").textContent = "Copiar atendimento"; }, 2000);
+}
+
+// MARK: Início
+
+function init() {
+  renderFields("patientFields", PATIENT_FIELDS, "p-");
+  renderFields("clinicalFields", CLINICAL_FIELDS, "c-");
+  renderLocais();
+  renderQueue();
+  const saved = safeStorage((s) => s.getItem(KEY_STORAGE));
+  if (saved) { $("apiKey").value = saved; $("rememberKey").checked = true; }
+  $("rememberKey").addEventListener("change", () => { if (!$("rememberKey").checked) { safeStorage((s) => s.removeItem(KEY_STORAGE)); } });
+  $("dadosInput").addEventListener("change", (e) => openDados(e.target.files[0]));
+  $("photoInput").addEventListener("change", (e) => choosePhoto(e.target.files[0]));
+  $("readBtn").addEventListener("click", readForm);
+  $("addBtn").addEventListener("click", addToQueue);
+  $("clearBtn").addEventListener("click", () => { clearForm(); status("addStatus", ""); });
+  $("downloadBtn").addEventListener("click", download);
+  $("copyClinicalBtn").addEventListener("click", copyClinical);
+  ["p-nome", "p-cpf", "p-cns", "p-dataNascimento"].forEach((id) => $(id).addEventListener("change", updateMatches));
+  document.querySelectorAll("#patientFields input, #clinicalFields input, #clinicalFields textarea").forEach((el) =>
+    el.addEventListener("input", () => el.classList.remove("doubt")));
+  window.addEventListener("beforeunload", (e) => {
+    if (state.queue.length) { e.preventDefault(); e.returnValue = ""; }
+  });
+}
+
+init();

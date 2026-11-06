@@ -4,98 +4,131 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#12283f">
-  <meta name="description" content="OrthckForm: reconheça texto de uma foto, revise os campos e gere um PDF preenchido.">
-  <title>OrthckForm — Da foto ao PDF</title>
+  <meta name="description" content="OrthckForm: fotografe a ficha, confira os dados lidos e cadastre o paciente no Orthck (dados.json).">
+  <title>OrthckForm</title>
   <link rel="stylesheet" href="./styles.css">
-  <script defer src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"></script>
-  <script defer src="https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
-  <script defer src="./app.js"></script>
+  <script type="module" src="./app.js"></script>
 </head>
 <body>
   <div class="app-shell">
     <header class="topbar">
       <a href="./" class="brand" aria-label="OrthckForm — início">
         <span class="brand-symbol">O</span>
-        <span><strong>OrthckForm</strong><small>Foto → texto → PDF</small></span>
+        <span><strong>OrthckForm</strong><small>Foto da ficha → cadastro no Orthck</small></span>
       </a>
-      <span class="privacy-chip"><span aria-hidden="true">●</span> Sem armazenamento de documentos</span>
+      <span class="privacy-chip"><span aria-hidden="true">●</span> Nada é gravado em servidor</span>
     </header>
     <main>
       <section class="hero">
-        <span class="eyebrow">LEITURA DE DOCUMENTOS</span>
-        <h1>Transforme anotações manuscritas em <span>PDFs preenchidos.</span></h1>
-        <p>Fotografe um formulário, confira a transcrição e gere um PDF a partir de um modelo. Seus dados não são gravados pelo aplicativo.</p>
+        <span class="eyebrow">CADASTRO POR FOTO</span>
+        <h1>Fotografe a ficha. <span>O paciente entra no Orthck.</span></h1>
+        <p>O Claude lê a ficha (ex.: Avaliação ortopédica – Araruna, CER II), você confere os campos e baixa o <code>dados.json</code> atualizado para importar no Orthck do Mac ou do Windows.</p>
       </section>
-      <div class="steps" aria-label="Etapas do processamento">
-        <span><b>1</b> Fotografia</span><span class="step-line"></span>
-        <span><b>2</b> Conferência</span><span class="step-line"></span>
-        <span><b>3</b> PDF final</span>
+
+      <div class="steps" aria-label="Etapas">
+        <span><b>1</b> Dados do Orthck</span><span class="step-line"></span>
+        <span><b>2</b> Foto</span><span class="step-line"></span>
+        <span><b>3</b> Conferência</span><span class="step-line"></span>
+        <span><b>4</b> Baixar JSON</span>
       </div>
+
+      <section class="panel" aria-labelledby="dados-title">
+        <div class="section-head"><span class="number">01</span><div>
+          <h2 id="dados-title">Arquivo de dados do Orthck</h2>
+          <p>Abra o <code>dados.json</code> atual. Assim o app reconhece pacientes já cadastrados e os locais de atendimento, e devolve o arquivo completo com os novos pacientes.</p>
+        </div></div>
+        <label class="btn btn-secondary file-button" for="dadosInput">Abrir dados.json<input id="dadosInput" type="file" accept="application/json,.json"></label>
+        <p class="hint" id="dadosInfo">Nenhum arquivo aberto.</p>
+        <details class="help">
+          <summary>Onde fica o dados.json? <span aria-hidden="true">⌄</span></summary>
+          <ul>
+            <li><strong>Mac:</strong> no Orthck, barra lateral › “Abrir pasta de dados” (fica em <code>~/Library/Application Support/GeradorDocumentos/dados.json</code>). Também serve o “Orthck - dados.json” do Google Drive.</li>
+            <li><strong>Windows:</strong> na pasta de dados do Orthck para Windows (Ajustes › pasta de dados), arquivo <code>dados.json</code>.</li>
+            <li><strong>Windows:</strong> o “Importar dados (.json)…” do Windows <em>substitui</em> tudo. Por isso, lá, sempre abra o dados.json atual aqui antes.</li>
+          </ul>
+        </details>
+      </section>
+
       <section class="panel" aria-labelledby="photo-title">
-        <div class="section-head"><span class="number">01</span><div><h2 id="photo-title">Fotografia do manuscrito</h2><p>Use uma imagem nítida, com boa iluminação e o documento inteiro visível.</p></div></div>
-        <label for="photoInput" class="upload-box" id="photoDrop">
+        <div class="section-head"><span class="number">02</span><div>
+          <h2 id="photo-title">Foto da ficha</h2>
+          <p>Ficha inteira visível, sem reflexo e bem iluminada.</p>
+        </div></div>
+        <label for="photoInput" class="upload-box">
           <span class="upload-icon" aria-hidden="true">▧</span>
           <strong>Toque para fotografar ou escolher uma imagem</strong>
-          <small>JPG, PNG ou imagem do celular • até 15 MB</small>
-          <input type="file" id="photoInput" accept="image/jpeg,image/png,image/webp,image/heic,image/heif">
+          <small>JPG, PNG ou WebP • até 20 MB</small>
+          <input type="file" id="photoInput" accept="image/*" capture="environment">
         </label>
         <div id="photoPreviewWrap" class="preview-wrap hidden">
-          <img id="photoPreview" alt="Prévia da fotografia enviada">
+          <img id="photoPreview" alt="Prévia da foto">
           <span id="photoFileName" class="file-label"></span>
         </div>
-        <div class="recognition-options">
-          <div class="recognition-option">
-            <div><h3>OCR no dispositivo <span class="tag">Gratuito</span></h3><p>Processa a imagem no navegador. Funciona melhor para letra de forma e escrita legível.</p></div>
-            <button id="localOcrBtn" type="button" class="btn btn-secondary">Reconhecer localmente</button>
-          </div>
-          <details class="recognition-option ai-option">
-            <summary><span><strong>Reconhecimento avançado por IA</strong><small>Opcional, útil para cursiva e manuscritos difíceis</small></span><span aria-hidden="true">⌄</span></summary>
-            <div class="ai-body">
-              <p>A imagem será enviada à API da OpenAI <strong>somente ao clicar em “Reconhecer com IA”</strong>. Informe uma chave de API própria; pode haver cobrança pela OpenAI. A chave fica apenas nesta aba, não é salva.</p>
-              <label for="apiKey">Chave de API da OpenAI</label>
-              <input type="password" id="apiKey" placeholder="sk-..." autocomplete="off" spellcheck="false">
-              <button id="aiOcrBtn" type="button" class="btn btn-primary">Reconhecer com IA</button>
-            </div>
-          </details>
+        <div class="ai-body">
+          <label for="apiKey">Chave de API da Anthropic (Claude)</label>
+          <input type="password" id="apiKey" placeholder="sk-ant-..." autocomplete="off" spellcheck="false">
+          <label class="check"><input type="checkbox" id="rememberKey"> Lembrar a chave neste aparelho</label>
+          <p class="hint">A chave fica só nesta página (ou neste aparelho, se marcar acima). A foto vai direto do navegador para a API da Anthropic, só ao clicar em “Ler ficha”. Use uma chave sua, com limite de gastos.</p>
+          <button id="readBtn" type="button" class="btn btn-primary">Ler ficha com o Claude</button>
         </div>
-        <p id="ocrStatus" class="status" role="status" aria-live="polite">Selecione uma imagem para começar.</p>
+        <p id="readStatus" class="status" role="status" aria-live="polite">Escolha uma foto para começar.</p>
       </section>
+
       <section class="panel" aria-labelledby="review-title">
-        <div class="section-head"><span class="number">02</span><div><h2 id="review-title">Revise o texto reconhecido</h2><p>Confira as informações antes da geração do documento. Nada é preenchido sem sua revisão.</p></div></div>
-        <label for="transcript" class="field-label">Transcrição completa</label>
-        <textarea id="transcript" rows="6" placeholder="O texto identificado na imagem aparecerá aqui. Você também pode digitar ou colar o conteúdo."></textarea>
-        <div class="between">
-          <h3>Campos para o PDF</h3>
-          <button class="text-button" id="extractBtn" type="button">Extrair campos da transcrição</button>
+        <div class="section-head"><span class="number">03</span><div>
+          <h2 id="review-title">Confira o paciente</h2>
+          <p>Os campos em laranja ficaram com leitura duvidosa. Corrija o que for preciso: nada entra no cadastro sem passar por aqui.</p>
+        </div></div>
+
+        <div class="fields-grid" id="patientFields"></div>
+
+        <div class="local-row">
+          <label for="localSelect" id="localSelectWrap">Local de atendimento
+            <select id="localSelect"><option value="">Nenhum</option></select>
+          </label>
+          <label for="localName" id="localNameWrap" class="hidden">Local de atendimento (nome igual ao do Orthck)
+            <input id="localName" type="text" placeholder="Ex.: ARARUNA - CER II">
+          </label>
         </div>
-        <div class="fields-grid">
-          <label>Nome completo<input id="field-nome" data-field="nome" type="text" placeholder="Nome do paciente"></label>
-          <label>Data<input id="field-data" data-field="data" type="text" placeholder="DD/MM/AAAA"></label>
-          <label>CPF<input id="field-cpf" data-field="cpf" type="text" placeholder="000.000.000-00"></label>
-          <label>Diagnóstico<input id="field-diagnostico" data-field="diagnostico" type="text" placeholder="Descrição"></label>
-          <label>CID<input id="field-cid" data-field="cid" type="text" placeholder="Ex.: M17.9"></label>
-          <label class="full">Observações<textarea id="field-observacoes" data-field="observacoes" rows="4" placeholder="Informações adicionais"></textarea></label>
-        </div>
-      </section>
-      <section class="panel" aria-labelledby="pdf-title">
-        <div class="section-head"><span class="number">03</span><div><h2 id="pdf-title">Modelo e preenchimento do PDF</h2><p>Use o modelo de demonstração ou carregue seu próprio PDF. Ajuste as posições conforme o formulário.</p></div></div>
-        <div class="template-actions">
-          <label class="btn btn-secondary file-button" for="pdfInput">Escolher modelo PDF<input id="pdfInput" type="file" accept="application/pdf"></label>
-          <button id="demoTemplateBtn" type="button" class="btn btn-ghost">Usar modelo de demonstração</button>
-        </div>
-        <p class="hint" id="pdfFileName">Nenhum PDF carregado. O modelo de demonstração será usado automaticamente.</p>
-        <details class="mapping-details">
-          <summary>Configurar as posições dos campos <span aria-hidden="true">⌄</span></summary>
-          <p class="hint">As coordenadas são percentuais da página: X da esquerda para a direita, Y do alto para baixo. Para PDFs editáveis, o aplicativo também tenta preencher automaticamente os campos com nomes correspondentes.</p>
-          <div class="table-scroll">
-            <table><thead><tr><th>Incluir</th><th>Campo</th><th>X (%)</th><th>Y (%)</th><th>Tamanho</th></tr></thead><tbody id="mappingRows"></tbody></table>
+
+        <div id="matchBox" class="match-box hidden" role="group" aria-labelledby="matchTitle"></div>
+
+        <details class="help" id="atendimentoDetails">
+          <summary>Atendimento lido da ficha (não vai para o cadastro) <span aria-hidden="true">⌄</span></summary>
+          <p class="hint">O Orthck não guarda anamnese nem exame no cadastro do paciente. Use “Copiar” para colar na aba Prontuário.</p>
+          <div class="fields-grid" id="clinicalFields"></div>
+          <div class="between">
+            <label class="check"><input type="checkbox" id="appendObs"> Guardar um resumo (data, diagnóstico e CID) nas observações do cadastro</label>
+            <button id="copyClinicalBtn" type="button" class="text-button">Copiar atendimento</button>
           </div>
-          <label for="pageNumber" class="inline-label">Página a preencher <input type="number" id="pageNumber" min="1" value="1" step="1"></label>
         </details>
-        <div id="pdfPreviewWrap" class="pdf-preview hidden"><iframe id="pdfPreview" title="Visualização do modelo PDF"></iframe></div>
-        <div class="generate-row"><button id="generateBtn" type="button" class="btn btn-primary btn-large">Gerar e baixar PDF preenchido</button><span id="pdfStatus" class="status" role="status" aria-live="polite"></span></div>
+
+        <details class="help">
+          <summary>Transcrição completa <span aria-hidden="true">⌄</span></summary>
+          <textarea id="transcript" rows="8" readonly></textarea>
+        </details>
+
+        <div class="generate-row">
+          <button id="addBtn" type="button" class="btn btn-primary">Adicionar à lista</button>
+          <button id="clearBtn" type="button" class="btn btn-ghost">Limpar campos</button>
+          <span id="addStatus" class="status" role="status" aria-live="polite"></span>
+        </div>
       </section>
-      <footer><strong>OrthckForm</strong> • Protótipo funcional <span>Revise todos os dados, especialmente informações clínicas, antes de utilizar qualquer documento.</span></footer>
+
+      <section class="panel" aria-labelledby="export-title">
+        <div class="section-head"><span class="number">04</span><div>
+          <h2 id="export-title">Baixar o JSON para o Orthck</h2>
+          <p>Adicione quantos pacientes quiser (uma foto por vez) e baixe tudo de uma vez.</p>
+        </div></div>
+        <ul id="queueList" class="queue"><li class="empty">Nenhum paciente na lista.</li></ul>
+        <div class="generate-row">
+          <button id="downloadBtn" type="button" class="btn btn-primary btn-large" disabled>Baixar JSON</button>
+          <span id="downloadStatus" class="status" role="status" aria-live="polite"></span>
+        </div>
+        <div class="howto" id="howto"></div>
+      </section>
+
+      <footer><strong>OrthckForm</strong> • Protótipo <span>Confira sempre os dados lidos antes de importar. Dados de pacientes enviados à API exigem base legal na LGPD e contrato com o fornecedor.</span></footer>
     </main>
   </div>
 </body>
