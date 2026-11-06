@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#12283f">
+  <meta name="description" content="OrthckForm: reconheça texto de uma foto, revise os campos e gere um PDF preenchido.">
+  <title>OrthckForm — Da foto ao PDF</title>
+  <link rel="stylesheet" href="./styles.css">
+  <script defer src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
+  <script defer src="./app.js"></script>
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <a href="./" class="brand" aria-label="OrthckForm — início">
+        <span class="brand-symbol">O</span>
+        <span><strong>OrthckForm</strong><small>Foto → texto → PDF</small></span>
+      </a>
+      <span class="privacy-chip"><span aria-hidden="true">●</span> Sem armazenamento de documentos</span>
+    </header>
+    <main>
+      <section class="hero">
+        <span class="eyebrow">LEITURA DE DOCUMENTOS</span>
+        <h1>Transforme anotações manuscritas em <span>PDFs preenchidos.</span></h1>
+        <p>Fotografe um formulário, confira a transcrição e gere um PDF a partir de um modelo. Seus dados não são gravados pelo aplicativo.</p>
+      </section>
+      <div class="steps" aria-label="Etapas do processamento">
+        <span><b>1</b> Fotografia</span><span class="step-line"></span>
+        <span><b>2</b> Conferência</span><span class="step-line"></span>
+        <span><b>3</b> PDF final</span>
+      </div>
+      <section class="panel" aria-labelledby="photo-title">
+        <div class="section-head"><span class="number">01</span><div><h2 id="photo-title">Fotografia do manuscrito</h2><p>Use uma imagem nítida, com boa iluminação e o documento inteiro visível.</p></div></div>
+        <label for="photoInput" class="upload-box" id="photoDrop">
+          <span class="upload-icon" aria-hidden="true">▧</span>
+          <strong>Toque para fotografar ou escolher uma imagem</strong>
+          <small>JPG, PNG ou imagem do celular • até 15 MB</small>
+          <input type="file" id="photoInput" accept="image/jpeg,image/png,image/webp,image/heic,image/heif">
+        </label>
+        <div id="photoPreviewWrap" class="preview-wrap hidden">
+          <img id="photoPreview" alt="Prévia da fotografia enviada">
+          <span id="photoFileName" class="file-label"></span>
+        </div>
+        <div class="recognition-options">
+          <div class="recognition-option">
+            <div><h3>OCR no dispositivo <span class="tag">Gratuito</span></h3><p>Processa a imagem no navegador. Funciona melhor para letra de forma e escrita legível.</p></div>
+            <button id="localOcrBtn" type="button" class="btn btn-secondary">Reconhecer localmente</button>
+          </div>
+          <details class="recognition-option ai-option">
+            <summary><span><strong>Reconhecimento avançado por IA</strong><small>Opcional, útil para cursiva e manuscritos difíceis</small></span><span aria-hidden="true">⌄</span></summary>
+            <div class="ai-body">
+              <p>A imagem será enviada à API da OpenAI <strong>somente ao clicar em “Reconhecer com IA”</strong>. Informe uma chave de API própria; pode haver cobrança pela OpenAI. A chave fica apenas nesta aba, não é salva.</p>
+              <label for="apiKey">Chave de API da OpenAI</label>
+              <input type="password" id="apiKey" placeholder="sk-..." autocomplete="off" spellcheck="false">
+              <button id="aiOcrBtn" type="button" class="btn btn-primary">Reconhecer com IA</button>
+            </div>
+          </details>
+        </div>
+        <p id="ocrStatus" class="status" role="status" aria-live="polite">Selecione uma imagem para começar.</p>
+      </section>
+      <section class="panel" aria-labelledby="review-title">
+        <div class="section-head"><span class="number">02</span><div><h2 id="review-title">Revise o texto reconhecido</h2><p>Confira as informações antes da geração do documento. Nada é preenchido sem sua revisão.</p></div></div>
+        <label for="transcript" class="field-label">Transcrição completa</label>
+        <textarea id="transcript" rows="6" placeholder="O texto identificado na imagem aparecerá aqui. Você também pode digitar ou colar o conteúdo."></textarea>
+        <div class="between">
+          <h3>Campos para o PDF</h3>
+          <button class="text-button" id="extractBtn" type="button">Extrair campos da transcrição</button>
+        </div>
+        <div class="fields-grid">
+          <label>Nome completo<input id="field-nome" data-field="nome" type="text" placeholder="Nome do paciente"></label>
+          <label>Data<input id="field-data" data-field="data" type="text" placeholder="DD/MM/AAAA"></label>
+          <label>CPF<input id="field-cpf" data-field="cpf" type="text" placeholder="000.000.000-00"></label>
+          <label>Diagnóstico<input id="field-diagnostico" data-field="diagnostico" type="text" placeholder="Descrição"></label>
+          <label>CID<input id="field-cid" data-field="cid" type="text" placeholder="Ex.: M17.9"></label>
+          <label class="full">Observações<textarea id="field-observacoes" data-field="observacoes" rows="4" placeholder="Informações adicionais"></textarea></label>
+        </div>
+      </section>
+      <section class="panel" aria-labelledby="pdf-title">
+        <div class="section-head"><span class="number">03</span><div><h2 id="pdf-title">Modelo e preenchimento do PDF</h2><p>Use o modelo de demonstração ou carregue seu próprio PDF. Ajuste as posições conforme o formulário.</p></div></div>
+        <div class="template-actions">
+          <label class="btn btn-secondary file-button" for="pdfInput">Escolher modelo PDF<input id="pdfInput" type="file" accept="application/pdf"></label>
+          <button id="demoTemplateBtn" type="button" class="btn btn-ghost">Usar modelo de demonstração</button>
+        </div>
+        <p class="hint" id="pdfFileName">Nenhum PDF carregado. O modelo de demonstração será usado automaticamente.</p>
+        <details class="mapping-details">
+          <summary>Configurar as posições dos campos <span aria-hidden="true">⌄</span></summary>
+          <p class="hint">As coordenadas são percentuais da página: X da esquerda para a direita, Y do alto para baixo. Para PDFs editáveis, o aplicativo também tenta preencher automaticamente os campos com nomes correspondentes.</p>
+          <div class="table-scroll">
+            <table><thead><tr><th>Incluir</th><th>Campo</th><th>X (%)</th><th>Y (%)</th><th>Tamanho</th></tr></thead><tbody id="mappingRows"></tbody></table>
+          </div>
+          <label for="pageNumber" class="inline-label">Página a preencher <input type="number" id="pageNumber" min="1" value="1" step="1"></label>
+        </details>
+        <div id="pdfPreviewWrap" class="pdf-preview hidden"><iframe id="pdfPreview" title="Visualização do modelo PDF"></iframe></div>
+        <div class="generate-row"><button id="generateBtn" type="button" class="btn btn-primary btn-large">Gerar e baixar PDF preenchido</button><span id="pdfStatus" class="status" role="status" aria-live="polite"></span></div>
+      </section>
+      <footer><strong>OrthckForm</strong> • Protótipo funcional <span>Revise todos os dados, especialmente informações clínicas, antes de utilizar qualquer documento.</span></footer>
+    </main>
+  </div>
+</body>
+</html>
