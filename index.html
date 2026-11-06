@@ -6,8 +6,8 @@
   <meta name="theme-color" content="#12283f">
   <meta name="description" content="OrthckForm: fotografe a ficha, confira os dados lidos e cadastre o paciente no Orthck (dados.json).">
   <title>OrthckForm</title>
-  <link rel="stylesheet" href="./styles.css">
-  <script type="module" src="./app.js"></script>
+  <link rel="stylesheet" href="./styles.css?v=2">
+  <script type="module" src="./app.js?v=2"></script>
 </head>
 <body>
   <div class="app-shell">
@@ -54,12 +54,15 @@
           <h2 id="photo-title">Foto da ficha</h2>
           <p>Ficha inteira visível, sem reflexo e bem iluminada.</p>
         </div></div>
-        <label for="photoInput" class="upload-box">
+        <div class="upload-box">
           <span class="upload-icon" aria-hidden="true">▧</span>
-          <strong>Toque para fotografar ou escolher uma imagem</strong>
-          <small>JPG, PNG ou WebP • até 20 MB</small>
-          <input type="file" id="photoInput" accept="image/*" capture="environment">
-        </label>
+          <strong>Foto da ficha</strong>
+          <small>JPG, PNG, HEIC ou WebP • até 20 MB</small>
+          <div class="photo-buttons">
+            <label class="btn btn-primary file-button" for="cameraInput">Tirar foto<input type="file" id="cameraInput" accept="image/*" capture="environment"></label>
+            <label class="btn btn-secondary file-button" for="photoInput">Escolher da galeria<input type="file" id="photoInput" accept="image/*"></label>
+          </div>
+        </div>
         <div id="photoPreviewWrap" class="preview-wrap hidden">
           <img id="photoPreview" alt="Prévia da foto">
           <span id="photoFileName" class="file-label"></span>

@@ -493,6 +493,7 @@ function addToQueue() {
   clearForm();
   state.photo = null;
   $("photoInput").value = "";
+  $("cameraInput").value = "";
   $("photoPreviewWrap").classList.add("hidden");
 }
 
@@ -605,7 +606,7 @@ function init() {
   if (saved) { $("apiKey").value = saved; $("rememberKey").checked = true; }
   $("rememberKey").addEventListener("change", () => { if (!$("rememberKey").checked) { safeStorage((s) => s.removeItem(KEY_STORAGE)); } });
   $("dadosInput").addEventListener("change", (e) => openDados(e.target.files[0]));
-  $("photoInput").addEventListener("change", (e) => choosePhoto(e.target.files[0]));
+  ["photoInput", "cameraInput"].forEach((id) => $(id).addEventListener("change", (e) => choosePhoto(e.target.files[0])));
   $("readBtn").addEventListener("click", readForm);
   $("addBtn").addEventListener("click", addToQueue);
   $("clearBtn").addEventListener("click", () => { clearForm(); status("addStatus", ""); });
