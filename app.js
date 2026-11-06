@@ -423,11 +423,11 @@
       replacePreview(output);
       const blob = new Blob([output], { type: "application/pdf" });
       const url = URL.createObjectURL(blob);
-      const link = document.createElement("a");
+      const link = window.document.createElement("a");
       const name = normalize(values.nome).slice(0, 35) || "documento";
       link.href = url;
       link.download = "OrthckForm-" + name + ".pdf";
-      document.body.appendChild(link);
+      window.document.body.appendChild(link);
       link.click();
       link.remove();
       setTimeout(() => URL.revokeObjectURL(url), 15000);
