@@ -53,3 +53,5 @@ HTML, CSS, JavaScript, [Tesseract.js 5](https://github.com/naptha/tesseract.js) 
 ## Próximos passos
 
 Ajustar o mapeamento de campos com uma foto de exemplo e o **PDF modelo real**; testar com imagens de demonstração sem dados de pacientes e revisar segurança para eventual uso em consultório.
+
+Projeto publicado como protótipo inicial.
